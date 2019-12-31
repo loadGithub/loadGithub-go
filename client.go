@@ -1,14 +1,24 @@
 package main
 
 import (
-	"golang.org/x/net/context"
-	"google.golang.org/grpc"
-	_"loadgithub/service"
+	"encoding/json"
+	"fmt"
+	"loadgithub/service"
 	"log"
 	"os"
+
 	"github.com/apache/pulsar-client-go/pulsar"
-	"fmt"
+	"github.com/go-redis/redis/v7"
+	"golang.org/x/net/context"
+	"google.golang.org/grpc"
 )
+
+type LoadgithubMto struct {
+	Login              string `json:"login"`
+	FollowingEndCursor string `json:"followingEndCursor"`
+	FollowerEndCursor  string `json:"followerEndCursor"`
+	Viewer             string `json:"viewer"`
+}
 
 func main() {
 
@@ -18,15 +28,15 @@ func main() {
 
 	pulsarBroker := os.Getenv("PULSAR_BROKER")
 
-	grpcServer = "192.168.1.8:5560"
+	grpcServer = "localhost:5560"
 
-	if grpcServer==""{
+	if grpcServer == "" {
 		grpcServer = "grpcServer:5560"
 	}
 
-	pulsarBroker = "192.168.1.6:6650"
+	pulsarBroker = "192.168.3.75:6560"
 
-	if pulsarBroker==""{
+	if pulsarBroker == "" {
 		pulsarBroker = "pulsar:6650"
 	}
 
@@ -36,34 +46,47 @@ func main() {
 	}
 
 	client, err := pulsar.NewClient(pulsar.ClientOptions{
-		URL: "pulsar://"+pulsarBroker,
+		URL: "pulsar://" + pulsarBroker,
 	})
 
-	if err!=nil{
-		log.Println("create pulsar client fail:{}",err)
+	if err != nil {
+		log.Println("create pulsar client fail:{}", err)
 	}
 
 	defer client.Close()
 
+	redisClient := redis.NewClient(&redis.Options{
+		Addr:     "192.168.3.75:6389",
+		Password: "", // no password set
+		DB:       0,  // use default DB
+	})
+
+	pong, err := redisClient.Ping().Result()
+	fmt.Println(pong, err)
+	if err != nil {
+		log.Println("ping redis fail:{}", err)
+	}
+
 	if role == "worker" {
 
-		go func(){
+		go func() {
 			consumer, err := client.Subscribe(pulsar.ConsumerOptions{
 				// topic lgh/viewer/{tokener}
-				Topic:            "persistent://lgh/viewer/default",
+				// Topic: "persistent://lgh/viewer/default",
+				Topic: "persistent://smartoilets/tdb/default",
 				// message base
 				//1. token  ->  lgh_token_default  --> etcd
 				//2. login
 				//3.followingEndCursor
 				//4.followerEndCursor
-	
-				//extra 
+
+				//extra
 				//1.following limit
 				//2.follower limit
 				SubscriptionName: "my-sub3",
 				Type:             pulsar.Shared,
 			})
-	
+
 			defer consumer.Close()
 
 			// 建立连接到gRPC服务
@@ -74,26 +97,44 @@ func main() {
 			// 函数结束时关闭连接
 			defer conn.Close()
 
-			for{
+			// grpcClient := service.NewGithubLoaderClient(conn)
+			// log.Println("begin grpc ==================")
+			// resp, err := grpcClient.QueryFollow(context.Background(), &service.QueryFollowRequest{Login: "liangyuanpeng", Token: "22987b33dcb0e2a86b7c7557ef4f320edff9f44f", FollowingEndCursor: "", FollowerEndCursor: ""})
+			// if err != nil {
+			// 	log.Fatalf("could not queryFollow: %v", err)
+			// }
+
+			//两份数据，一份是保存当前数据查询进度 第二份是user follow info，
+
+			// log.Printf("queryFollow.result: %s", resp.String())
+
+			for {
 
 				msg, err := consumer.Receive(context.Background())
 				if err != nil {
 					log.Fatal(err)
 				}
-			
-				fmt.Printf("Received message msgId: %#v -- content: '%s'\n",
-				msg.ID(), string(msg.Payload()))
 
-				// var queryFollowRequest QueryFollowRequest
-		
+				fmt.Printf("Received message msgId: %#v -- content: '%s'\n",
+					msg.ID(), string(msg.Payload()))
+
+				// var queryFollowRequest &service.QueryFollowRequest
+				var loadgithubMto LoadgithubMto
+
 				// rdr := strings.NewReader(string(msg.Payload()))
 				//  将json串rdr解码到结构体对象p1中
-				// json.NewDecoder(rdr).Decode(&queryFollowRequest)
+
+				jsonerr := json.Unmarshal([]byte(msg.Payload()), &loadgithubMto)
+				if jsonerr != nil {
+					log.Println("json parse fail:{}", jsonerr)
+					continue
+				}
+				// err = json.NewDecoder(string(ext.Raw)).Decode(&conf)
 
 				// 创建Waiter服务的客户端
 				// t := service.NewGreeterClient(conn)
 
-				// grpcClient := service.NewGithubLoaderClient(conn)
+				grpcClient := service.NewGithubLoaderClient(conn)
 
 				// 模拟请求数据
 				// res := "test123"
@@ -109,20 +150,25 @@ func main() {
 				// }
 				// log.Printf("服务端响应: %s", tr.Message)
 
-				// resp, err := grpcClient.QueryFollow(context.Background(), &service.QueryFollowRequest{Login: "", Token: "", FollowingEndCursor: "", FollowerEndCursor: ""})
-				// if err != nil {
-				// 	log.Fatalf("could not queryFollow: %v", err)
-				// }
-				// log.Printf("queryFollow.result: %s", resp.Data)
+				token, rerr := redisClient.Get("lgh_token_" + loadgithubMto.Viewer).Result()
+				if rerr != nil {
+					log.Println("get token fail:{}|{}", loadgithubMto, rerr)
+					continue
+				}
+
+				log.Println("begin grpc ==================")
+				resp, err := grpcClient.QueryFollow(context.Background(), &service.QueryFollowRequest{Login: loadgithubMto.Login, Token: token, FollowingEndCursor: loadgithubMto.FollowingEndCursor, FollowerEndCursor: loadgithubMto.FollowerEndCursor})
+				// resp, err := grpcClient.QueryFollow(context.Background(), &service.QueryFollowRequest{Login: "liangyuanpeng", Token: "", FollowingEndCursor: "", FollowerEndCursor: ""})
+				if err != nil {
+					log.Fatalf("could not queryFollow: %v", err)
+				}
+				log.Printf("queryFollow.result: %s", resp.String())
 
 			}
 		}()
 
 	}
 
-	select{
+	select {}
 
-	}
-
-	
 }
