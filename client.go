@@ -26,11 +26,20 @@ type LoadgithubMto struct {
 }
 
 // login FollowingEndCursor FollowerEndCursor order
-type SaveBaseDto struct {
+type SaveWorkerDto struct {
 	Login              string `json:"login"`
 	FollowingEndCursor string `json:"followingEndCursor"`
 	FollowerEndCursor  string `json:"followerEndCursor"`
 	Order              int    `json:"order"`
+}
+
+// login name updateAt email company
+type SaveBaseDto struct {
+	Login    string `json:"login"`
+	Name     string `json:"name"`
+	Email    string `json:"email"`
+	Company  string `json:"company"`
+	UpdateAt string `json:"updateAt"`
 }
 
 func main() {
@@ -56,7 +65,7 @@ func main() {
 		role = "worker"
 	}
 
-	client, err := pulsar.NewClient(pulsar.ClientOptions{
+	pulsarClient, err := pulsar.NewClient(pulsar.ClientOptions{
 		URL: "pulsar://" + pulsarBroker,
 	})
 
@@ -64,7 +73,7 @@ func main() {
 		log.Println("create pulsar client fail:{}", err)
 	}
 
-	defer client.Close()
+	defer pulsarClient.Close()
 
 	ctx := context.Background()
 	// mongoCtx, _ := context.WithTimeout(context.Background(), 10*time.Second)
@@ -98,6 +107,7 @@ func main() {
 	fmt.Println("Connected to MongoDB!")
 
 	collection := mongoClient.Database("lgh").Collection("workerQueue")
+	mongoBaseCollection := mongoClient.Database("lgh").Collection("base")
 	// res, err := collection.InsertOne(mongoCtx, bson.M{"name": "pi", "value": 3.14159})
 	// if err != nil {
 	// 	log.Println("===============insert to mongo fail:{}", err)
@@ -109,7 +119,7 @@ func main() {
 	if role == "worker" {
 
 		go func() {
-			consumer, err := client.Subscribe(pulsar.ConsumerOptions{
+			consumer, err := pulsarClient.Subscribe(pulsar.ConsumerOptions{
 				// topic lgh/viewer/{tokener}
 				Topic: "persistent://public/default/default",
 				// Topic: "persistent://lgh/viewer/default",
@@ -142,14 +152,23 @@ func main() {
 			// 函数结束时关闭连接
 			defer conn.Close()
 
-			producer, errp := client.CreateProducer(pulsar.ProducerOptions{
-				Topic: "persistent://public/default/mongo-base",
+			producer, errp := pulsarClient.CreateProducer(pulsar.ProducerOptions{
+				Topic: "persistent://public/default/mongo-worker",
 			})
 			if errp != nil {
 				log.Fatal(errp)
 			}
 
 			defer producer.Close()
+
+			baseProducer, errp := pulsarClient.CreateProducer(pulsar.ProducerOptions{
+				Topic: "persistent://public/default/mongo-base",
+			})
+			if errp != nil {
+				log.Fatal(errp)
+			}
+
+			defer baseProducer.Close()
 
 			// grpcClient := service.NewGithubLoaderClient(conn)
 			// log.Println("begin grpc ==================")
@@ -169,8 +188,8 @@ func main() {
 					log.Fatal(err)
 				}
 
-				fmt.Printf("Received message msgId: %#v -- content: '%s'\n",
-					msg.ID(), string(msg.Payload()))
+				// fmt.Printf("Received message msgId: %#v -- content: '%s'\n",
+				// msg.ID(), string(msg.Payload()))
 
 				// var queryFollowRequest &service.QueryFollowRequest
 				var loadgithubMto LoadgithubMto
@@ -231,14 +250,14 @@ func main() {
 				//关系表  login_cursor{login_followingEndCursor_followerEndCursor} following follower
 
 				for _, following := range resp.GetData().GetUser().GetFollowing().GetNodes() {
-					var saveBaseDto SaveBaseDto
-					saveBaseDto.Login = following.Login
-					saveBaseDto.FollowingEndCursor = ""
-					saveBaseDto.FollowerEndCursor = ""
+					var saveWorkerDto SaveWorkerDto
+					saveWorkerDto.Login = following.Login
+					saveWorkerDto.FollowingEndCursor = ""
+					saveWorkerDto.FollowerEndCursor = ""
 
-					jsonstr, err := json.Marshal(&saveBaseDto)
+					jsonstr, err := json.Marshal(&saveWorkerDto)
 					if err != nil {
-						fmt.Println(err.Error())
+						log.Println("parse.json.fail.worker:{}", err.Error())
 						continue
 					}
 
@@ -248,17 +267,38 @@ func main() {
 					}); err != nil {
 						log.Printf("pulsar.send.fail: %s", err)
 					}
+
+					var saveBaseDto SaveBaseDto
+					saveBaseDto.Login = following.Login
+					saveBaseDto.Name = following.Name
+					saveBaseDto.Email = following.Email
+					saveBaseDto.Company = following.Company
+					saveBaseDto.UpdateAt = following.UpdatedAt
+
+					jsonstr2, err2 := json.Marshal(&saveBaseDto)
+					if err2 != nil {
+						log.Println("parse.json.fail.worker:{}", err.Error())
+						continue
+					}
+
+					//msgId
+					if _, err := baseProducer.Send(ctx, &pulsar.ProducerMessage{
+						Payload: []byte(jsonstr2),
+					}); err != nil {
+						log.Printf("pulsar.send.base.fail: %s", err)
+					}
+
 				}
 
 				for _, following := range resp.GetData().GetUser().GetFollowers().GetNodes() {
-					var saveBaseDto SaveBaseDto
-					saveBaseDto.Login = following.Login
-					saveBaseDto.FollowingEndCursor = ""
-					saveBaseDto.FollowerEndCursor = ""
+					var saveWorkerDto SaveWorkerDto
+					saveWorkerDto.Login = following.Login
+					saveWorkerDto.FollowingEndCursor = ""
+					saveWorkerDto.FollowerEndCursor = ""
 
-					jsonstr, err := json.Marshal(&saveBaseDto)
+					jsonstr, err := json.Marshal(&saveWorkerDto)
 					if err != nil {
-						fmt.Println(err.Error())
+						log.Println("parse.json.fail.worker:{}", err.Error())
 						continue
 					}
 
@@ -268,16 +308,44 @@ func main() {
 					}); err != nil {
 						log.Printf("pulsar.send.fail: %s", err)
 					}
+
+					var saveBaseDto SaveBaseDto
+					saveBaseDto.Login = following.Login
+					saveBaseDto.Name = following.Name
+					saveBaseDto.Email = following.Email
+					saveBaseDto.Company = following.Company
+					saveBaseDto.UpdateAt = following.UpdatedAt
+
+					jsonstr2, err2 := json.Marshal(&saveBaseDto)
+					if err2 != nil {
+						log.Println("parse.json.fail.worker:{}", err.Error())
+						continue
+					}
+
+					//msgId
+					if _, err := baseProducer.Send(ctx, &pulsar.ProducerMessage{
+						Payload: []byte(jsonstr2),
+					}); err != nil {
+						log.Printf("pulsar.send.base.fail: %s", err)
+					}
 				}
 
-				var saveBaseDto SaveBaseDto
-				saveBaseDto.Login = loadgithubMto.Login
-				saveBaseDto.FollowingEndCursor = resp.GetData().GetUser().GetFollowing().GetPageInfo().GetEndCursor()
-				saveBaseDto.FollowerEndCursor = resp.GetData().GetUser().GetFollowers().GetPageInfo().GetEndCursor()
+				var saveWorkerDto SaveWorkerDto
+				saveWorkerDto.Login = loadgithubMto.Login
+				saveWorkerDto.FollowingEndCursor = resp.GetData().GetUser().GetFollowing().GetPageInfo().GetEndCursor()
+				saveWorkerDto.FollowerEndCursor = resp.GetData().GetUser().GetFollowers().GetPageInfo().GetEndCursor()
 
-				jsonstr, err := json.Marshal(&saveBaseDto)
+				if !resp.GetData().GetUser().GetFollowing().GetPageInfo().HasNextPage {
+					saveWorkerDto.FollowingEndCursor = "end"
+				}
+
+				if !resp.GetData().GetUser().GetFollowers().GetPageInfo().HasNextPage {
+					saveWorkerDto.FollowerEndCursor = "end"
+				}
+
+				jsonstr, err := json.Marshal(&saveWorkerDto)
 				if err != nil {
-					fmt.Println(err.Error())
+					log.Println("parse.json.fail.worker:{}", err.Error())
 					continue
 				}
 
@@ -287,6 +355,27 @@ func main() {
 				}); err != nil {
 					log.Printf("pulsar.send.fail: %s", err)
 				}
+
+				// var saveBaseDto SaveBaseDto
+				// saveBaseDto.Login = loadgithubMto.Login
+				// saveBaseDto.Name = following.Name
+				// saveBaseDto.Email = following.Email
+				// saveBaseDto.Company = following.Company
+				// saveBaseDto.UpdateAt = following.UpdatedAt
+
+				// jsonstr2, err2 := json.Marshal(&saveBaseDto)
+				// if err2 != nil {
+				// 	log.Println("parse.json.fail.worker:{}", err.Error())
+				// 	continue
+				// }
+
+				// //msgId
+				// if _, err := baseProducer.Send(ctx, &pulsar.ProducerMessage{
+				// 	Payload: []byte(jsonstr2),
+				// }); err != nil {
+				// 	log.Printf("pulsar.send.base.fail: %s", err)
+				// }
+
 				//确认消费
 				consumer.Ack(msg)
 			}
@@ -299,12 +388,13 @@ func main() {
 
 	if role == "saver" {
 
+		//listener worker msg
 		go func() {
 			log.Println("begin saver==========================")
 			//监听pulsar 保存数据到mongodb
-			consumer, err := client.Subscribe(pulsar.ConsumerOptions{
+			consumer, err := pulsarClient.Subscribe(pulsar.ConsumerOptions{
 				// topic lgh/viewer/{tokener}
-				Topic:            "persistent://public/default/mongo-base",
+				Topic:            "persistent://public/default/mongo-worker",
 				SubscriptionName: "my-sub3",
 				Type:             pulsar.Shared,
 			})
@@ -324,10 +414,10 @@ func main() {
 					log.Fatal(err)
 				}
 
-				fmt.Printf("Received message msgId: %#v -- content: '%s'\n",
-					msg.ID(), string(msg.Payload()))
+				// fmt.Printf("Received message msgId: %#v -- content: '%s'\n",
+				// msg.ID(), string(msg.Payload()))
 
-				var saveBaseDto SaveBaseDto
+				var saveBaseDto SaveWorkerDto
 
 				jsonerr := json.Unmarshal([]byte(msg.Payload()), &saveBaseDto)
 				if jsonerr != nil {
@@ -338,20 +428,78 @@ func main() {
 				res, err := collection.InsertOne(mongoCtx, saveBaseDto)
 				if err != nil {
 					if strings.Index(err.Error(), "dup key") > 0 {
-						//重复唯一索引，可以确认消费消息
+						//重复唯一索引，可以确认消费消息  需要更新数据
 						log.Println("mongodb.dup key:{}", err)
 					} else {
-						log.Println("===============insert to mongo fail:{}", err)
+						log.Println("===============insert to mongo worker fail:{}", err)
 						continue
 					}
 				} else {
 					id := res.InsertedID
-					log.Println("insert.mongodb.success:{}", id)
+					log.Println("insert.mongodb.worker.success:{}", id)
+					//TODO 插入成功后写到缓存，如果缓存有则是需要更新
+					err := redisClient.Set("lgh_exist_"+saveBaseDto.Login, "1", 0).Err()
+					if err != nil {
+						log.Println("redis.set.key.fail:{}", err)
+						panic(err)
+					}
 				}
-
 				//确认消费
 				consumer.Ack(msg)
+			}
+		}()
 
+		//listener base msg
+		go func() {
+			log.Println("begin saver==========================")
+			//监听pulsar 保存数据到mongodb
+			consumer, err := pulsarClient.Subscribe(pulsar.ConsumerOptions{
+				// topic lgh/viewer/{tokener}
+				Topic:            "persistent://public/default/mongo-base",
+				SubscriptionName: "my-sub3",
+				Type:             pulsar.Shared,
+			})
+			if err != nil {
+				log.Fatal("pulsar.consume.base.fail:{}", err)
+				return
+			}
+
+			defer consumer.Close()
+
+			for {
+
+				mongoCtx, _ := context.WithTimeout(context.Background(), 10*time.Second)
+
+				msg, err := consumer.Receive(context.Background())
+				if err != nil {
+					log.Fatal(err)
+				}
+
+				// fmt.Printf("Received message msgId: %#v -- content: '%s'\n",
+				// msg.ID(), string(msg.Payload()))
+
+				var saveBaseDto SaveBaseDto
+
+				jsonerr := json.Unmarshal([]byte(msg.Payload()), &saveBaseDto)
+				if jsonerr != nil {
+					log.Println("json parse fail:{}", jsonerr)
+					continue
+				}
+
+				res, err := mongoBaseCollection.InsertOne(mongoCtx, saveBaseDto)
+				if err != nil {
+					if strings.Index(err.Error(), "dup key") > 0 {
+						log.Println("mongodb.dup key:{}", err)
+					} else {
+						log.Println("===============insert to mongo base fail:{}", err)
+						continue
+					}
+				} else {
+					id := res.InsertedID
+					log.Println("insert.mongodb.base.success:{}", id)
+				}
+				//确认消费
+				consumer.Ack(msg)
 			}
 		}()
 	}
