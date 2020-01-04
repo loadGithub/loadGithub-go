@@ -1,0 +1,17 @@
+version: '3'
+services:
+    shibalnu:
+        image: shibalnu
+        environment: 
+            - PULSAR_BROKER=pulsarBroker:6560
+            - GRPC_SERVER=grpcServer:5560
+            - REDIS_HOST=redis:6379
+            - MONGO_HOST=mongo:27017
+            - TOKEN=
+        depends_on: 
+            - redis
+            - mongo
+    redis:
+        image: redis:5-alpine   
+    mongo:
+        image: mongo:3.2

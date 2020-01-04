@@ -91,6 +91,12 @@ func main() {
 		mongoHost = "mongo:27017"
 	}
 
+	token := os.Getenv("TOKEN")
+	if token == "" {
+		log.Println("token must be init")
+		panic(-1)
+	}
+
 	ctx := context.Background()
 	// mongoCtx, _ := context.WithTimeout(context.Background(), 10*time.Second)
 
@@ -251,11 +257,11 @@ func main() {
 
 				//TODO viewer 作为topic11
 
-				token, rerr := redisClient.Get("lgh_token").Result()
-				if rerr != nil {
-					log.Println("get token fail:{}|{}", loadgithubMto, rerr)
-					continue
-				}
+				// token, rerr := redisClient.Get("lgh_token").Result()
+				// if rerr != nil {
+				// 	log.Println("get token fail:{}|{}", loadgithubMto, rerr)
+				// 	continue
+				// }
 
 				log.Println("begin grpc ==================")
 				resp, err := grpcClient.QueryFollow(context.Background(), &service.QueryFollowRequest{Login: loadgithubMto.Login, Token: token, FollowingEndCursor: loadgithubMto.FollowingEndCursor, FollowerEndCursor: loadgithubMto.FollowerEndCursor})
