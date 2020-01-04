@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"loadgithub/service"
 	"log"
+	"math/rand"
 	"os"
 	"strings"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 
+	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -43,6 +45,8 @@ type SaveBaseDto struct {
 }
 
 func main() {
+
+	rand.Seed(time.Now().UnixNano())
 
 	log.Println("=================================")
 
@@ -88,6 +92,7 @@ func main() {
 	fmt.Println(pong, err)
 	if err != nil {
 		log.Println("ping redis fail:{}", err)
+		panic(-1)
 	}
 
 	// 设置客户端连接配置
@@ -121,7 +126,9 @@ func main() {
 		go func() {
 			consumer, err := pulsarClient.Subscribe(pulsar.ConsumerOptions{
 				// topic lgh/viewer/{tokener}
-				Topic: "persistent://public/default/default",
+				// Topic:         "persistent://public/default/default",
+				// TopicsPattern: "persistent://public/default/viewer-*",
+				TopicsPattern: "persistent://public/default/viewer",
 				// Topic: "persistent://lgh/viewer/default",
 				// Topic: "persistent://smartoilets/tdb/default",
 				// message base
@@ -202,6 +209,13 @@ func main() {
 					log.Println("json parse fail:{}", jsonerr)
 					continue
 				}
+
+				//TODO 考虑只有一个end情况
+				if loadgithubMto.FollowingEndCursor == "end" && loadgithubMto.FollowerEndCursor == "end" {
+					consumer.Ack(msg)
+					continue
+				}
+
 				// err = json.NewDecoder(string(ext.Raw)).Decode(&conf)
 
 				// 创建Waiter服务的客户端
@@ -248,6 +262,8 @@ func main() {
 				//login name updateAt company email
 
 				//关系表  login_cursor{login_followingEndCursor_followerEndCursor} following follower
+
+				//TODO 存储follow关系
 
 				for _, following := range resp.GetData().GetUser().GetFollowing().GetNodes() {
 					var saveWorkerDto SaveWorkerDto
@@ -425,25 +441,47 @@ func main() {
 					continue
 				}
 
-				res, err := collection.InsertOne(mongoCtx, saveBaseDto)
-				if err != nil {
-					if strings.Index(err.Error(), "dup key") > 0 {
-						//重复唯一索引，可以确认消费消息  需要更新数据
-						log.Println("mongodb.dup key:{}", err)
+				exist, rerr := redisClient.Get("lgh_exist_" + saveBaseDto.Login).Result()
+				if rerr != nil {
+					if strings.Index(rerr.Error(), "nil") > 0 {
+						exist = ""
 					} else {
-						log.Println("===============insert to mongo worker fail:{}", err)
+						log.Println("get lgh_exist fail:{}", saveBaseDto.Login, rerr)
 						continue
 					}
-				} else {
-					id := res.InsertedID
-					log.Println("insert.mongodb.worker.success:{}", id)
-					//TODO 插入成功后写到缓存，如果缓存有则是需要更新
-					err := redisClient.Set("lgh_exist_"+saveBaseDto.Login, "1", 0).Err()
+				}
+
+				// log.Println("============exist:{}", exist)
+
+				if exist == "" {
+					res, err := collection.InsertOne(mongoCtx, saveBaseDto)
 					if err != nil {
-						log.Println("redis.set.key.fail:{}", err)
-						panic(err)
+						if strings.Index(err.Error(), "dup key") > 0 {
+							//重复唯一索引，可以确认消费消息  需要更新数据
+							log.Println("mongodb.dup key:{}", err)
+						} else {
+							log.Println("===============insert to mongo worker fail:{}", err)
+							continue
+						}
+					} else {
+						id := res.InsertedID
+						log.Println("insert.mongodb.worker.success:{}", id)
+						//TODO 插入成功后写到缓存，如果缓存有则是需要更新
+						err := redisClient.Set("lgh_exist_"+saveBaseDto.Login, "1", 0).Err()
+						if err != nil {
+							log.Println("redis.set.key.fail:{}", err)
+						}
+					}
+				} else {
+					//更新
+					//结束是end标识，""只标识开始，redis有数据则标识已经开始 无效消息，丢弃
+					if saveBaseDto.FollowingEndCursor != "" || saveBaseDto.FollowerEndCursor != "" {
+						filter := bson.M{"login": saveBaseDto.Login}
+						data := bson.M{"$set": bson.M{"followingEndCursor": saveBaseDto.FollowingEndCursor, "followierEndCursor": saveBaseDto.FollowerEndCursor}}
+						collection.UpdateOne(mongoCtx, filter, data)
 					}
 				}
+
 				//确认消费
 				consumer.Ack(msg)
 			}
@@ -504,13 +542,143 @@ func main() {
 		}()
 	}
 
+	role = "tasker"
+
 	if role == "tasker" {
+
 		//定时load mongodb task放入redis 队列
+		var ch chan int
+		//定时任务
+		ticker := time.NewTicker(time.Second * 300)
+		go func() {
+
+			for range ticker.C {
+
+				randomOrder := rand.Intn(100)
+
+				// 按类型、状态筛选
+				filter := bson.M{
+					"followingEndCursor": bson.M{"$ne": "end"},
+					"followerEndCursor":  bson.M{"$ne": "end"},
+					"order":              bson.M{"$lt": randomOrder},
+				}
+
+				ctx = context.Background()
+				// filter 过滤条件
+				// options.Find() 返回一个查找选项实例
+				// SetSort(bson.M{sort: -1}) 按照字段排序，-1表示降序，这里的sort可以为"title"或"type"等数据表的字段
+				// SetSkip(skip) 设置跳过多少条记录
+				// SetLimit(limit) 设置最多选择多少条记录
+
+				//TODO end的数据还能查出来  需要fix
+				cursor, err := collection.Find(context.Background(), filter, options.Find().SetSort(bson.M{"order": -1}).SetSkip(0).SetLimit(100))
+				if err != nil {
+					log.Println("tasker.select.mongodb.fail:{}", err)
+				}
+
+				var workers []SaveWorkerDto
+
+				defer cursor.Close(ctx)
+				for cursor.Next(ctx) {
+					worker := SaveWorkerDto{}
+					// task := TaskSchema{}
+					err = cursor.Decode(&worker)
+					if err != nil {
+						return
+					}
+					workers = append(workers, worker)
+				}
+
+				for _, item := range workers {
+					// var loadgithubMto LoadgithubMto
+					// loadgithubMto.Viewer = "liangyuanpeng"
+					// loadgithubMto.Login = item.Login
+					// loadgithubMto.FollowingEndCursor = item.FollowingEndCursor
+					// loadgithubMto.FollowerEndCursor = item.FollowerEndCursor
+					// jsonstr, err := json.Marshal(&loadgithubMto)
+					// if err != nil {
+					// 	log.Println("parse.json.fail.worker:{}", err.Error())
+					// 	continue
+					// }
+					// //msgId
+					// if _, err := producer.Send(ctx, &pulsar.ProducerMessage{
+					// 	Payload: []byte(jsonstr),
+					// }); err != nil {
+					// 	log.Printf("pulsar.send.fail: %s", err)
+					// }
+
+					//放入redis 队列
+					redisClient.SAdd("lgh_task", item.Login)
+
+					log.Println("===============work:{}", item)
+				}
+
+				fmt.Println(time.Now().Format("2006-01-02 15:04:05"))
+			}
+			ch <- 1
+		}()
+		// <-ch
 	}
 
+	log.Println("hello committer")
+
+	role = "committer"
+
 	if role == "committer" {
-		//从redis 队列拿数据 放入pulsar
+		//定时从redis 队列拿数据 放入pulsar
 		//并且将login放入task记录，且加入过期时间，在没过期前不再执行相关task
+		var ch chan int
+		ticker := time.NewTicker(time.Second * 120)
+		go func() {
+
+			producer, errp := pulsarClient.CreateProducer(pulsar.ProducerOptions{
+				Topic: "persistent://public/default/viewer",
+			})
+			if errp != nil {
+				log.Fatal(errp)
+			}
+
+			for range ticker.C {
+
+				for i := 0; i < 5; i++ {
+					task, err := redisClient.SPop("lgh_task").Result()
+					log.Println("=================committer.task:{}", task)
+					if err != nil {
+						log.Println("lgh_task.rpop.fail:{}", err)
+					}
+					if task == "" {
+						break
+					}
+
+					var saveWorkerDto SaveWorkerDto
+					filter := bson.M{"login": task}
+					collection.FindOne(context.Background(), filter).Decode(&saveWorkerDto)
+					log.Println("==============saveWorkerDto:{}=========", saveWorkerDto)
+
+					var loadgithubMto LoadgithubMto
+
+					loadgithubMto.Viewer = "liangyuanpeng"
+					loadgithubMto.Login = saveWorkerDto.Login
+					loadgithubMto.FollowingEndCursor = saveWorkerDto.FollowingEndCursor
+					loadgithubMto.FollowerEndCursor = saveWorkerDto.FollowerEndCursor
+					jsonstr, err := json.Marshal(&loadgithubMto)
+					if err != nil {
+						log.Println("parse.json.fail.worker:{}", err.Error())
+						continue
+					}
+					// msgId
+					if _, err := producer.Send(ctx, &pulsar.ProducerMessage{
+						Payload: []byte(jsonstr),
+					}); err != nil {
+						log.Printf("pulsar.send.fail: %s", err)
+					}
+				}
+
+				fmt.Println(time.Now().Format("2006-01-02 15:04:05"))
+			}
+			ch <- 1
+		}()
+		<-ch
 	}
 
 	select {}
