@@ -79,11 +79,23 @@ func main() {
 
 	defer pulsarClient.Close()
 
+	redisHost := os.Getenv("REDIS_HOST")
+
+	if redisHost == "" {
+		redisHost = "redis:6379"
+	}
+
+	mongoHost := os.Getenv("MONGO_HOST")
+
+	if mongoHost == "" {
+		mongoHost = "mongo:27017"
+	}
+
 	ctx := context.Background()
 	// mongoCtx, _ := context.WithTimeout(context.Background(), 10*time.Second)
 
 	redisClient := redis.NewClient(&redis.Options{
-		Addr:     "localhost:6389",
+		Addr:     redisHost,
 		Password: "", // no password set
 		DB:       0,  // use default DB
 	})
@@ -96,7 +108,7 @@ func main() {
 	}
 
 	// 设置客户端连接配置
-	clientOptions := options.Client().ApplyURI("mongodb://localhost:27017")
+	clientOptions := options.Client().ApplyURI("mongodb://" + mongoHost)
 
 	// 连接到MongoDB
 	mongoClient, err := mongo.Connect(context.TODO(), clientOptions)
