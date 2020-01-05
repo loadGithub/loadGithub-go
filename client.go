@@ -44,6 +44,13 @@ type SaveBaseDto struct {
 	UpdateAt string `json:"updateAt"`
 }
 
+//login -> realylogin_followencursor_followingcursor
+type SaveFollowDto struct {
+	Login      string   `json:"login"`
+	Followings []string `json:"followings"`
+	Followers  []string `json:"followers"`
+}
+
 func main() {
 
 	rand.Seed(time.Now().UnixNano())
@@ -131,6 +138,7 @@ func main() {
 
 	collection := mongoClient.Database("lgh").Collection("workerQueue")
 	mongoBaseCollection := mongoClient.Database("lgh").Collection("base")
+	mongoRsCollection := mongoClient.Database("lgh").Collection("relationship")
 	// res, err := collection.InsertOne(mongoCtx, bson.M{"name": "pi", "value": 3.14159})
 	// if err != nil {
 	// 	log.Println("===============insert to mongo fail:{}", err)
@@ -195,6 +203,16 @@ func main() {
 
 			defer baseProducer.Close()
 
+			//relationship
+			rsProducer, errp := pulsarClient.CreateProducer(pulsar.ProducerOptions{
+				Topic: "persistent://public/default/mongo-relationship",
+			})
+			if errp != nil {
+				log.Fatal(errp)
+			}
+
+			defer rsProducer.Close()
+
 			// grpcClient := service.NewGithubLoaderClient(conn)
 			// log.Println("begin grpc ==================")
 			// resp, err := grpcClient.QueryFollow(context.Background(), &service.QueryFollowRequest{Login: "liangyuanpeng", Token: "22987b33dcb0e2a86b7c7557ef4f320edff9f44f", FollowingEndCursor: "", FollowerEndCursor: ""})
@@ -228,8 +246,9 @@ func main() {
 					continue
 				}
 
-				//TODO 考虑只有一个end情况
-				if loadgithubMto.FollowingEndCursor == "end" && loadgithubMto.FollowerEndCursor == "end" {
+				//TODO 需要考虑完善，目前只要有一个end就不再继续该worker
+				if loadgithubMto.FollowingEndCursor == "end" || loadgithubMto.FollowerEndCursor == "end" {
+					log.Println("endcursor.have end", loadgithubMto)
 					consumer.Ack(msg)
 					continue
 				}
@@ -263,7 +282,7 @@ func main() {
 				// 	continue
 				// }
 
-				log.Println("begin grpc ==================")
+				log.Println("begin grpc ==================", loadgithubMto.Login)
 				resp, err := grpcClient.QueryFollow(context.Background(), &service.QueryFollowRequest{Login: loadgithubMto.Login, Token: token, FollowingEndCursor: loadgithubMto.FollowingEndCursor, FollowerEndCursor: loadgithubMto.FollowerEndCursor})
 				// resp, err := grpcClient.QueryFollow(context.Background(), &service.QueryFollowRequest{Login: "liangyuanpeng", Token: "", FollowingEndCursor: "", FollowerEndCursor: ""})
 				if err != nil {
@@ -283,7 +302,16 @@ func main() {
 
 				//TODO 存储follow关系
 
+				var saveFollowDto SaveFollowDto
+				saveFollowLogin := loadgithubMto.Login
+				saveFollowLogin += "_" + resp.GetData().GetUser().GetFollowers().GetPageInfo().GetEndCursor()
+				saveFollowLogin += "_" + resp.GetData().GetUser().GetFollowing().GetPageInfo().GetEndCursor()
+				saveFollowDto.Login = saveFollowLogin
+
 				for _, following := range resp.GetData().GetUser().GetFollowing().GetNodes() {
+
+					saveFollowDto.Followings = append(saveFollowDto.Followings, following.Login)
+
 					var saveWorkerDto SaveWorkerDto
 					saveWorkerDto.Login = following.Login
 					saveWorkerDto.FollowingEndCursor = ""
@@ -325,6 +353,9 @@ func main() {
 				}
 
 				for _, following := range resp.GetData().GetUser().GetFollowers().GetNodes() {
+
+					saveFollowDto.Followers = append(saveFollowDto.Followers, following.Login)
+
 					var saveWorkerDto SaveWorkerDto
 					saveWorkerDto.Login = following.Login
 					saveWorkerDto.FollowingEndCursor = ""
@@ -362,6 +393,19 @@ func main() {
 					}); err != nil {
 						log.Printf("pulsar.send.base.fail: %s", err)
 					}
+				}
+
+				rsJsonstr, err := json.Marshal(&saveFollowDto)
+				if err != nil {
+					log.Println("parse.json.fail.worker:{}", err.Error())
+					continue
+				}
+
+				//msgId
+				if _, err := rsProducer.Send(ctx, &pulsar.ProducerMessage{
+					Payload: []byte(rsJsonstr),
+				}); err != nil {
+					log.Printf("pulsar.send.fail: %s", err)
 				}
 
 				var saveWorkerDto SaveWorkerDto
@@ -441,12 +485,12 @@ func main() {
 
 			for {
 
-				mongoCtx, _ := context.WithTimeout(context.Background(), 10*time.Second)
-
 				msg, err := consumer.Receive(context.Background())
 				if err != nil {
 					log.Fatal(err)
 				}
+
+				mongoCtx, _ := context.WithTimeout(context.Background(), 10*time.Second)
 
 				// fmt.Printf("Received message msgId: %#v -- content: '%s'\n",
 				// msg.ID(), string(msg.Payload()))
@@ -524,12 +568,12 @@ func main() {
 
 			for {
 
-				mongoCtx, _ := context.WithTimeout(context.Background(), 10*time.Second)
-
 				msg, err := consumer.Receive(context.Background())
 				if err != nil {
 					log.Fatal(err)
 				}
+
+				mongoCtx, _ := context.WithTimeout(context.Background(), 10*time.Second)
 
 				// fmt.Printf("Received message msgId: %#v -- content: '%s'\n",
 				// msg.ID(), string(msg.Payload()))
@@ -542,17 +586,83 @@ func main() {
 					continue
 				}
 
-				res, err := mongoBaseCollection.InsertOne(mongoCtx, saveBaseDto)
+				exist, rerr := redisClient.Get("lgh_exist_" + saveBaseDto.Login).Result()
+				if rerr != nil {
+					if strings.Index(rerr.Error(), "nil") > 0 {
+						exist = ""
+					} else {
+						log.Println("get lgh_exist fail:{}", saveBaseDto.Login, rerr)
+						continue
+					}
+				}
+
+				if exist == "" {
+					res, err := mongoBaseCollection.InsertOne(mongoCtx, saveBaseDto)
+					if err != nil {
+						if strings.Index(err.Error(), "dup key") > 0 {
+							log.Println("mongodb.dup key:{}", err)
+						} else {
+							log.Println("===============insert to mongo base fail:{}", err)
+							continue
+						}
+					} else {
+						id := res.InsertedID
+						log.Println("insert.mongodb.base.success:{}", id)
+					}
+				}
+
+				//确认消费
+				consumer.Ack(msg)
+			}
+		}()
+
+		//listener relationship
+		go func() {
+			log.Println("begin saver.relationship==========================")
+			//监听pulsar 保存数据到mongodb
+			consumer, err := pulsarClient.Subscribe(pulsar.ConsumerOptions{
+				Topic:            "persistent://public/default/mongo-relationship",
+				SubscriptionName: "my-sub3",
+				Type:             pulsar.Shared,
+			})
+			if err != nil {
+				log.Fatal("pulsar.consume.relationship.fail:{}", err)
+				return
+			}
+
+			defer consumer.Close()
+
+			for {
+
+				msg, err := consumer.Receive(context.Background())
+				if err != nil {
+					log.Fatal(err)
+				}
+
+				mongoCtx, _ := context.WithTimeout(context.Background(), 10*time.Second)
+
+				// fmt.Printf("Received message msgId: %#v -- content: '%s'\n",
+				// msg.ID(), string(msg.Payload()))
+
+				var saveFollowDto SaveFollowDto
+
+				jsonerr := json.Unmarshal([]byte(msg.Payload()), &saveFollowDto)
+				if jsonerr != nil {
+					log.Println("json parse fail:{}", jsonerr)
+					continue
+				}
+
+				res, err := mongoRsCollection.InsertOne(mongoCtx, saveFollowDto)
 				if err != nil {
 					if strings.Index(err.Error(), "dup key") > 0 {
 						log.Println("mongodb.dup key:{}", err)
 					} else {
-						log.Println("===============insert to mongo base fail:{}", err)
+						log.Println("===============insert to mongo relationship fail:{}", err)
 						continue
 					}
 				} else {
 					id := res.InsertedID
-					log.Println("insert.mongodb.base.success:{}", id)
+					log.Println("insert.mongodb.relationship.success:{}", id)
 				}
 				//确认消费
 				consumer.Ack(msg)
@@ -653,6 +763,7 @@ func main() {
 				Topic: "persistent://public/default/viewer",
 			})
 			if errp != nil {
+				//这里退出了程序
 				log.Fatal(errp)
 			}
 
@@ -696,7 +807,6 @@ func main() {
 			}
 			ch <- 1
 		}()
-		<-ch
 	}
 
 	select {}
