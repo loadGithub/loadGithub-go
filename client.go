@@ -57,6 +57,38 @@ func main() {
 
 	log.Println("=================================")
 
+	roles := os.Getenv("LGH_ROLES")
+	var roleList []string 
+	if roles!=""{
+		roles = strings.Replace(roles,","," ",-1)
+		roleList = strings.Fields(roles)
+	}
+
+	if len(roleList)==0{
+		roleList = append(roleList,"worker")
+	}
+
+	var doWork bool 
+	var doCommit bool 
+	var doTask bool 
+	var doSave bool 
+
+	for _,item :=range roleList{
+		if item=="worker"{
+			doWork = true
+		}
+		if item=="committer"{
+			doWork = true
+		}
+		if item=="tasker"{
+			doWork = true
+		}
+		if item=="saver"{
+			doWork = true
+		}
+	}
+	
+
 	grpcServer := os.Getenv("GRPC_SERVER")
 	log.Println("grpcServer:" + grpcServer)
 	log.Println(grpcServer == "")
@@ -147,7 +179,8 @@ func main() {
 
 	// log.Println("insert.mongodb.data.success:{}", id)
 
-	if role == "worker" {
+	if doWork {
+		log.Println("satring work")
 
 		go func() {
 			consumer, err := pulsarClient.Subscribe(pulsar.ConsumerOptions{
@@ -461,10 +494,8 @@ func main() {
 
 	}
 
-	role = "saver"
-	log.Println("role == saver:{}", (role == "saver"))
-
-	if role == "saver" {
+	if doSave {
+		log.Println("starting save")
 
 		//listener worker msg
 		go func() {
@@ -670,9 +701,9 @@ func main() {
 		}()
 	}
 
-	role = "tasker"
 
-	if role == "tasker" {
+	if doTask {
+		log.Println("starting task")
 
 		//定时load mongodb task放入redis 队列
 		var ch chan int
@@ -750,9 +781,8 @@ func main() {
 
 	log.Println("hello committer")
 
-	role = "committer"
-
-	if role == "committer" {
+	if doCommit {
+		log.Println("starting commit")
 		//定时从redis 队列拿数据 放入pulsar
 		//并且将login放入task记录，且加入过期时间，在没过期前不再执行相关task
 		var ch chan int
