@@ -58,36 +58,35 @@ func main() {
 	log.Println("=================================")
 
 	roles := os.Getenv("LGH_ROLES")
-	var roleList []string 
-	if roles!=""{
-		roles = strings.Replace(roles,","," ",-1)
+	var roleList []string
+	if roles != "" {
+		roles = strings.Replace(roles, ",", " ", -1)
 		roleList = strings.Fields(roles)
 	}
 
-	if len(roleList)==0{
-		roleList = append(roleList,"worker")
+	if len(roleList) == 0 {
+		roleList = append(roleList, "worker")
 	}
 
-	var doWork bool 
-	var doCommit bool 
-	var doTask bool 
-	var doSave bool 
+	var doWork bool
+	var doCommit bool
+	var doTask bool
+	var doSave bool
 
-	for _,item :=range roleList{
-		if item=="worker"{
+	for _, item := range roleList {
+		if item == "worker" {
 			doWork = true
 		}
-		if item=="committer"{
+		if item == "committer" {
 			doWork = true
 		}
-		if item=="tasker"{
+		if item == "tasker" {
 			doWork = true
 		}
-		if item=="saver"{
+		if item == "saver" {
 			doWork = true
 		}
 	}
-	
 
 	grpcServer := os.Getenv("GRPC_SERVER")
 	log.Println("grpcServer:" + grpcServer)
@@ -320,6 +319,10 @@ func main() {
 				// resp, err := grpcClient.QueryFollow(context.Background(), &service.QueryFollowRequest{Login: "liangyuanpeng", Token: "", FollowingEndCursor: "", FollowerEndCursor: ""})
 				if err != nil {
 					log.Fatalf("could not queryFollow: %v", err)
+					continue
+				}
+				if resp.String() == "" {
+					log.Println("grpc.resp.string is empty")
 					continue
 				}
 				log.Printf("queryFollow.result: %s", resp.String())
@@ -700,7 +703,6 @@ func main() {
 			}
 		}()
 	}
-
 
 	if doTask {
 		log.Println("starting task")
