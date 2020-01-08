@@ -102,8 +102,6 @@ func main() {
 
 	if redisExpirStr != "" {
 		redisExpirInt, _ = strconv.Atoi(redisExpirStr)
-		// redisExpir2, _ := strconv.ParseFloat(redisExpirStr, 64)
-		// redisExpir = redisExpir2
 	}
 
 	if redisExpirRandomStr != "" {
@@ -113,6 +111,25 @@ func main() {
 	log.Println("redisExpir:{}|{}", redisExpirInt, redisExpirRandomInt)
 
 	redisExpirInt = redisExpirInt + redisExpirRandomInt
+
+	redisTaskExpirStr := os.Getenv("LGH_TASK_EXPIR")
+
+	redisTaskExpirRandomStr := os.Getenv("LGH_TASK_EXPIR_RANDOM")
+
+	redisTaskExpirInt := rand.Intn(60 * 60 * 24)
+	redisTaskExpirRandomInt := rand.Intn(60 * 60)
+
+	if redisTaskExpirStr != "" {
+		redisTaskExpirInt, _ = strconv.Atoi(redisTaskExpirStr)
+	}
+
+	if redisTaskExpirRandomStr != "" {
+		redisTaskExpirRandomInt, _ = strconv.Atoi(redisTaskExpirRandomStr)
+	}
+
+	log.Println("redisTaskExpirInt:{}|{}", redisTaskExpirInt, redisTaskExpirRandomInt)
+
+	redisTaskExpirInt = redisTaskExpirInt + redisTaskExpirRandomInt
 
 	maxCommit := 5
 
@@ -782,26 +799,27 @@ func main() {
 				}
 
 				for _, item := range workers {
-					// var loadgithubMto LoadgithubMto
-					// loadgithubMto.Viewer = "liangyuanpeng"
-					// loadgithubMto.Login = item.Login
-					// loadgithubMto.FollowingEndCursor = item.FollowingEndCursor
-					// loadgithubMto.FollowerEndCursor = item.FollowerEndCursor
-					// jsonstr, err := json.Marshal(&loadgithubMto)
-					// if err != nil {
-					// 	log.Println("parse.json.fail.worker:{}", err.Error())
-					// 	continue
-					// }
-					// //msgId
-					// if _, err := producer.Send(ctx, &pulsar.ProducerMessage{
-					// 	Payload: []byte(jsonstr),
-					// }); err != nil {
-					// 	log.Printf("pulsar.send.fail: %s", err)
-					// }
+					exist, rerr := redisClient.Get("lgh_task_exist_" + item.Login).Result()
+					if rerr != nil {
+						if strings.Index(rerr.Error(), "nil") > 0 {
+							exist = ""
+						} else {
+							log.Println("get lgh_task_exist fail:{}", item.Login, rerr)
+							continue
+						}
+					}
+
+					if exist != "" {
+						log.Println("task.continue.lgh_task_exist :{}", item.Login)
+						continue
+					}
 
 					//放入redis 队列
 					redisClient.SAdd("lgh_task", item.Login)
-					//TODO 放入任务缓存，一定时间内部再加入task
+					err := redisClient.Set("lgh_task_exist_"+item.Login, "1", time.Duration(redisTaskExpirInt)*time.Second).Err()
+					if err != nil {
+						log.Println("redis.set.key.fail:{}", err)
+					}
 
 					log.Println("===============work:{}", item)
 				}
