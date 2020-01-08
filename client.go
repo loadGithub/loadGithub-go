@@ -7,6 +7,7 @@ import (
 	"log"
 	"math/rand"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -58,40 +59,68 @@ func main() {
 	log.Println("=================================")
 
 	roles := os.Getenv("LGH_ROLES")
-	var roleList []string 
-	if roles!=""{
-		roles = strings.Replace(roles,","," ",-1)
+	var roleList []string
+	if roles != "" {
+		roles = strings.Replace(roles, ",", " ", -1)
 		roleList = strings.Fields(roles)
 	}
 
-	if len(roleList)==0{
-		roleList = append(roleList,"worker")
+	if len(roleList) == 0 {
+		roleList = append(roleList, "worker")
 	}
 
-	var doWork bool 
-	var doCommit bool 
-	var doTask bool 
-	var doSave bool 
+	var doWork bool
+	var doCommit bool
+	var doTask bool
+	var doSave bool
 
-	for _,item :=range roleList{
-		if item=="worker"{
+	for _, item := range roleList {
+		if item == "worker" {
 			doWork = true
 		}
-		if item=="committer"{
-			doWork = true
+		if item == "committer" {
+			doCommit = true
 		}
-		if item=="tasker"{
-			doWork = true
+		if item == "tasker" {
+			doTask = true
 		}
-		if item=="saver"{
-			doWork = true
+		if item == "saver" {
+			doSave = true
 		}
 	}
-	
 
 	grpcServer := os.Getenv("GRPC_SERVER")
 	log.Println("grpcServer:" + grpcServer)
 	log.Println(grpcServer == "")
+
+	redisExpirStr := os.Getenv("LGH_EXPIR")
+
+	redisExpirRandomStr := os.Getenv("LGH_EXPIR_RANDOM")
+
+	redisExpirInt := rand.Intn(60 * 60 * 24)
+	redisExpirRandomInt := rand.Intn(60 * 60)
+
+	if redisExpirStr != "" {
+		redisExpirInt, _ = strconv.Atoi(redisExpirStr)
+		// redisExpir2, _ := strconv.ParseFloat(redisExpirStr, 64)
+		// redisExpir = redisExpir2
+	}
+
+	if redisExpirRandomStr != "" {
+		redisExpirRandomInt, _ = strconv.Atoi(redisExpirRandomStr)
+	}
+
+	log.Println("redisExpir:{}|{}", redisExpirInt, redisExpirRandomInt)
+
+	redisExpirInt = redisExpirInt + redisExpirRandomInt
+
+	maxCommit := 5
+
+	maxCommitStr := os.Getenv("LGH_COMMIT_MAX")
+
+	if maxCommitStr != "" {
+		maxCommit, _ = strconv.Atoi(maxCommitStr)
+	}
 
 	pulsarBroker := os.Getenv("PULSAR_BROKER")
 
@@ -323,6 +352,10 @@ func main() {
 					continue
 				}
 				log.Printf("queryFollow.result: %s", resp.String())
+				if resp.String() == "" {
+
+					continue
+				}
 				//TODO insert data topic
 				//persistent://lgh/store/{storedb}  default mongodb
 				//TODO worker优化关闭， 考虑消费了topic没有执行行为
@@ -560,7 +593,8 @@ func main() {
 						id := res.InsertedID
 						log.Println("insert.mongodb.worker.success:{}", id)
 						//TODO 插入成功后写到缓存，如果缓存有则是需要更新
-						err := redisClient.Set("lgh_exist_"+saveBaseDto.Login, "1", 0).Err()
+
+						err := redisClient.Set("lgh_exist_"+saveBaseDto.Login, "1", time.Duration(redisExpirInt)*time.Second).Err()
 						if err != nil {
 							log.Println("redis.set.key.fail:{}", err)
 						}
@@ -701,7 +735,6 @@ func main() {
 		}()
 	}
 
-
 	if doTask {
 		log.Println("starting task")
 
@@ -768,6 +801,7 @@ func main() {
 
 					//放入redis 队列
 					redisClient.SAdd("lgh_task", item.Login)
+					//TODO 放入任务缓存，一定时间内部再加入task
 
 					log.Println("===============work:{}", item)
 				}
@@ -799,7 +833,7 @@ func main() {
 
 			for range ticker.C {
 
-				for i := 0; i < 5; i++ {
+				for i := 0; i < maxCommit; i++ {
 					task, err := redisClient.SPop("lgh_task").Result()
 					log.Println("=================committer.task:{}", task)
 					if err != nil {
