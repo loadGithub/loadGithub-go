@@ -368,6 +368,10 @@ func main() {
 					log.Fatalf("could not queryFollow: %v", err)
 					continue
 				}
+				if resp.String() == "" {
+					log.Println("grpc.resp.string is empty")
+					continue
+				}
 				log.Printf("queryFollow.result: %s", resp.String())
 				if resp.String() == "" {
 
