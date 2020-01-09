@@ -93,6 +93,29 @@ func main() {
 	log.Println("grpcServer:" + grpcServer)
 	log.Println(grpcServer == "")
 
+	viewerTopic := "persistent://public/default/viewer"
+	baseTopic := "persistent://public/default/mongo-base"
+	workerTopic := "persistent://public/default/mongo-worker"
+	rsTopic := "persistent://public/default/mongo-relationship"
+
+	viewerTopicEnv := os.Getenv("LGH_TOPIC_VIEWER")
+	baseTopicEnv := os.Getenv("LGH_TOPIC_BASE")
+	workerTopicEnv := os.Getenv("LGH_TOPIC_WORKER")
+	rsTopicEnv := os.Getenv("LGH_TOPIC_RS")
+
+	if viewerTopicEnv != "" {
+		viewerTopic = viewerTopicEnv
+	}
+	if baseTopicEnv != "" {
+		baseTopic = baseTopicEnv
+	}
+	if workerTopicEnv != "" {
+		workerTopic = workerTopicEnv
+	}
+	if rsTopicEnv != "" {
+		rsTopic = rsTopicEnv
+	}
+
 	redisExpirStr := os.Getenv("LGH_EXPIR")
 
 	redisExpirRandomStr := os.Getenv("LGH_EXPIR_RANDOM")
@@ -109,6 +132,12 @@ func main() {
 	}
 
 	log.Println("redisExpir:{}|{}", redisExpirInt, redisExpirRandomInt)
+
+	taskMaxStr := os.Getenv("LGH_TASK_MAX")
+	taskMaxInt := 100
+	if taskMaxStr != "" {
+		taskMaxInt, _ = strconv.Atoi(taskMaxStr)
+	}
 
 	redisExpirInt = redisExpirInt + redisExpirRandomInt
 
@@ -233,7 +262,7 @@ func main() {
 				// topic lgh/viewer/{tokener}
 				// Topic:         "persistent://public/default/default",
 				// TopicsPattern: "persistent://public/default/viewer-*",
-				TopicsPattern: "persistent://public/default/viewer",
+				TopicsPattern: viewerTopic,
 				// Topic: "persistent://lgh/viewer/default",
 				// Topic: "persistent://smartoilets/tdb/default",
 				// message base
@@ -265,7 +294,7 @@ func main() {
 			defer conn.Close()
 
 			producer, errp := pulsarClient.CreateProducer(pulsar.ProducerOptions{
-				Topic: "persistent://public/default/mongo-worker",
+				Topic: workerTopic,
 			})
 			if errp != nil {
 				log.Fatal(errp)
@@ -274,7 +303,7 @@ func main() {
 			defer producer.Close()
 
 			baseProducer, errp := pulsarClient.CreateProducer(pulsar.ProducerOptions{
-				Topic: "persistent://public/default/mongo-base",
+				Topic: baseTopic,
 			})
 			if errp != nil {
 				log.Fatal(errp)
@@ -284,7 +313,7 @@ func main() {
 
 			//relationship
 			rsProducer, errp := pulsarClient.CreateProducer(pulsar.ProducerOptions{
-				Topic: "persistent://public/default/mongo-relationship",
+				Topic: rsTopic,
 			})
 			if errp != nil {
 				log.Fatal(errp)
@@ -557,7 +586,7 @@ func main() {
 			//监听pulsar 保存数据到mongodb
 			consumer, err := pulsarClient.Subscribe(pulsar.ConsumerOptions{
 				// topic lgh/viewer/{tokener}
-				Topic:            "persistent://public/default/mongo-worker",
+				Topic:            workerTopic,
 				SubscriptionName: "my-sub3",
 				Type:             pulsar.Shared,
 			})
@@ -601,6 +630,7 @@ func main() {
 				// log.Println("============exist:{}", exist)
 
 				if exist == "" {
+					saveBaseDto.Order = rand.Intn(100)
 					res, err := collection.InsertOne(mongoCtx, saveBaseDto)
 					if err != nil {
 						if strings.Index(err.Error(), "dup key") > 0 {
@@ -641,7 +671,7 @@ func main() {
 			//监听pulsar 保存数据到mongodb
 			consumer, err := pulsarClient.Subscribe(pulsar.ConsumerOptions{
 				// topic lgh/viewer/{tokener}
-				Topic:            "persistent://public/default/mongo-base",
+				Topic:            baseTopic,
 				SubscriptionName: "my-sub3",
 				Type:             pulsar.Shared,
 			})
@@ -707,7 +737,7 @@ func main() {
 			log.Println("begin saver.relationship==========================")
 			//监听pulsar 保存数据到mongodb
 			consumer, err := pulsarClient.Subscribe(pulsar.ConsumerOptions{
-				Topic:            "persistent://public/default/mongo-relationship",
+				Topic:            rsTopic,
 				SubscriptionName: "my-sub3",
 				Type:             pulsar.Shared,
 			})
@@ -773,7 +803,8 @@ func main() {
 				filter := bson.M{
 					"followingEndCursor": bson.M{"$ne": "end"},
 					"followerEndCursor":  bson.M{"$ne": "end"},
-					"order":              bson.M{"$lt": randomOrder},
+					// "order":              bson.M{"$gte": randomOrder},
+					"order": bson.M{"$lt": randomOrder},
 				}
 
 				ctx = context.Background()
@@ -784,7 +815,7 @@ func main() {
 				// SetLimit(limit) 设置最多选择多少条记录
 
 				//TODO end的数据还能查出来  需要fix
-				cursor, err := collection.Find(context.Background(), filter, options.Find().SetSort(bson.M{"order": -1}).SetSkip(0).SetLimit(100))
+				cursor, err := collection.Find(context.Background(), filter, options.Find().SetSort(bson.M{"order": -1}).SetSkip(0).SetLimit(int64(taskMaxInt)))
 				if err != nil {
 					log.Println("tasker.select.mongodb.fail:{}", err)
 				}
@@ -846,7 +877,7 @@ func main() {
 		go func() {
 
 			producer, errp := pulsarClient.CreateProducer(pulsar.ProducerOptions{
-				Topic: "persistent://public/default/viewer",
+				Topic: viewerTopic,
 			})
 			if errp != nil {
 				//这里退出了程序
