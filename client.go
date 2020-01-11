@@ -52,6 +52,40 @@ type SaveFollowDto struct {
 	Followers  []string `json:"followers"`
 }
 
+var channs = make(chan int, 50)
+
+func sendBase(saveBaseDto SaveBaseDto, producer pulsar.Producer) {
+	jsonstr2, err2 := json.Marshal(&saveBaseDto)
+	if err2 != nil {
+		log.Println("parse.json.fail.worker:{}", err2.Error())
+		return
+	}
+	// log.Println("==========================sendBase", jsonstr2)
+	if _, err := producer.Send(context.Background(), &pulsar.ProducerMessage{
+		Payload: []byte(jsonstr2),
+	}); err != nil {
+		log.Printf("pulsar.send.base.fail: %s", err)
+	}
+	
+}
+
+func sendWork(saveWorkerDto SaveWorkerDto, producer pulsar.Producer) {
+	jsonstr, err := json.Marshal(&saveWorkerDto)
+	if err != nil {
+		log.Println("parse.json.fail.worker:{}", err.Error())
+		return
+	}
+	// log.Println("==========================sendWork", jsonstr)
+
+	//msgId
+	if _, err := producer.Send(context.Background(), &pulsar.ProducerMessage{
+		Payload: []byte(jsonstr),
+	}); err != nil {
+		log.Printf("pulsar.send.fail: %s", err)
+	}
+	
+}
+
 func main() {
 
 	rand.Seed(time.Now().UnixNano())
@@ -87,6 +121,13 @@ func main() {
 		if item == "saver" {
 			doSave = true
 		}
+	}
+
+	//worker channel max
+	maxChennStr := os.Getenv("LGH_WORKER_CHAN")
+	if maxChennStr != "" {
+		maxChennInt, _ := strconv.Atoi(maxChennStr)
+		channs = make(chan int, maxChennInt)
 	}
 
 	grpcServer := os.Getenv("GRPC_SERVER")
@@ -332,6 +373,8 @@ func main() {
 
 			// log.Printf("queryFollow.result: %s", resp.String())
 
+			grpcClient := service.NewGithubLoaderClient(conn)
+
 			for {
 
 				msg, err := consumer.Receive(context.Background())
@@ -361,38 +404,8 @@ func main() {
 					continue
 				}
 
-				// err = json.NewDecoder(string(ext.Raw)).Decode(&conf)
-
-				// 创建Waiter服务的客户端
-				// t := service.NewGreeterClient(conn)
-
-				grpcClient := service.NewGithubLoaderClient(conn)
-
-				// 模拟请求数据
-				// res := "test123"
-				// os.Args[1] 为用户执行输入的参数 如：go run ***.go 123
-				// if len(os.Args) > 1 {
-				// res = os.Args[1]
-				// }
-
-				// 调用gRPC接口
-				// tr, err := t.SayHello(context.Background(), &service.HelloRequest{Name: res})
-				// if err != nil {
-				// 	log.Fatalf("could not greet: %v", err)
-				// }
-				// log.Printf("服务端响应: %s", tr.Message)
-
-				//TODO viewer 作为topic11
-
-				// token, rerr := redisClient.Get("lgh_token").Result()
-				// if rerr != nil {
-				// 	log.Println("get token fail:{}|{}", loadgithubMto, rerr)
-				// 	continue
-				// }
-
 				log.Println("begin grpc ==================", loadgithubMto.Login)
 				resp, err := grpcClient.QueryFollow(context.Background(), &service.QueryFollowRequest{Login: loadgithubMto.Login, Token: token, FollowingEndCursor: loadgithubMto.FollowingEndCursor, FollowerEndCursor: loadgithubMto.FollowerEndCursor})
-				// resp, err := grpcClient.QueryFollow(context.Background(), &service.QueryFollowRequest{Login: "liangyuanpeng", Token: "", FollowingEndCursor: "", FollowerEndCursor: ""})
 				if err != nil {
 					log.Fatalf("could not queryFollow: %v", err)
 					continue
@@ -402,21 +415,11 @@ func main() {
 					continue
 				}
 				log.Printf("queryFollow.result: %s", resp.String())
-				if resp.String() == "" {
-
-					continue
-				}
-				//TODO insert data topic
-				//persistent://lgh/store/{storedb}  default mongodb
 				//TODO worker优化关闭， 考虑消费了topic没有执行行为
 
 				//login FollowingEndCursor FollowerEndCursor order
-
 				//login name updateAt company email
-
 				//关系表  login_cursor{login_followingEndCursor_followerEndCursor} following follower
-
-				//TODO 存储follow关系
 
 				var saveFollowDto SaveFollowDto
 				saveFollowLogin := loadgithubMto.Login
@@ -433,18 +436,19 @@ func main() {
 					saveWorkerDto.FollowingEndCursor = ""
 					saveWorkerDto.FollowerEndCursor = ""
 
-					jsonstr, err := json.Marshal(&saveWorkerDto)
-					if err != nil {
-						log.Println("parse.json.fail.worker:{}", err.Error())
-						continue
-					}
+					// jsonstr, err := json.Marshal(&saveWorkerDto)
+					// if err != nil {
+					// 	log.Println("parse.json.fail.worker:{}", err.Error())
+					// 	continue
+					// }
 
-					//msgId
-					if _, err := producer.Send(ctx, &pulsar.ProducerMessage{
-						Payload: []byte(jsonstr),
-					}); err != nil {
-						log.Printf("pulsar.send.fail: %s", err)
-					}
+					// //msgId
+					// if _, err := producer.Send(ctx, &pulsar.ProducerMessage{
+					// 	Payload: []byte(jsonstr),
+					// }); err != nil {
+					// 	log.Printf("pulsar.send.fail: %s", err)
+					// }
+					sendWork(saveWorkerDto, producer)
 
 					var saveBaseDto SaveBaseDto
 					saveBaseDto.Login = following.Login
@@ -453,19 +457,20 @@ func main() {
 					saveBaseDto.Company = following.Company
 					saveBaseDto.UpdateAt = following.UpdatedAt
 
-					jsonstr2, err2 := json.Marshal(&saveBaseDto)
-					if err2 != nil {
-						log.Println("parse.json.fail.worker:{}", err.Error())
-						continue
-					}
+					sendBase(saveBaseDto, baseProducer)
 
-					//msgId
-					if _, err := baseProducer.Send(ctx, &pulsar.ProducerMessage{
-						Payload: []byte(jsonstr2),
-					}); err != nil {
-						log.Printf("pulsar.send.base.fail: %s", err)
-					}
+					// jsonstr2, err2 := json.Marshal(&saveBaseDto)
+					// if err2 != nil {
+					// 	log.Println("parse.json.fail.worker:{}", err2.Error())
+					// 	continue
+					// }
 
+					// //msgId
+					// if _, err := baseProducer.Send(ctx, &pulsar.ProducerMessage{
+					// 	Payload: []byte(jsonstr2),
+					// }); err != nil {
+					// 	log.Printf("pulsar.send.base.fail: %s", err)
+					// }
 				}
 
 				for _, following := range resp.GetData().GetUser().GetFollowers().GetNodes() {
@@ -477,18 +482,19 @@ func main() {
 					saveWorkerDto.FollowingEndCursor = ""
 					saveWorkerDto.FollowerEndCursor = ""
 
-					jsonstr, err := json.Marshal(&saveWorkerDto)
-					if err != nil {
-						log.Println("parse.json.fail.worker:{}", err.Error())
-						continue
-					}
+					// jsonstr, err := json.Marshal(&saveWorkerDto)
+					// if err != nil {
+					// 	log.Println("parse.json.fail.worker:{}", err.Error())
+					// 	continue
+					// }
+					// //msgId
+					// if _, err := producer.Send(ctx, &pulsar.ProducerMessage{
+					// 	Payload: []byte(jsonstr),
+					// }); err != nil {
+					// 	log.Printf("pulsar.send.fail: %s", err)
+					// }
 
-					//msgId
-					if _, err := producer.Send(ctx, &pulsar.ProducerMessage{
-						Payload: []byte(jsonstr),
-					}); err != nil {
-						log.Printf("pulsar.send.fail: %s", err)
-					}
+					sendWork(saveWorkerDto, producer)
 
 					var saveBaseDto SaveBaseDto
 					saveBaseDto.Login = following.Login
@@ -497,18 +503,19 @@ func main() {
 					saveBaseDto.Company = following.Company
 					saveBaseDto.UpdateAt = following.UpdatedAt
 
-					jsonstr2, err2 := json.Marshal(&saveBaseDto)
-					if err2 != nil {
-						log.Println("parse.json.fail.worker:{}", err.Error())
-						continue
-					}
+					sendBase(saveBaseDto, baseProducer)
 
-					//msgId
-					if _, err := baseProducer.Send(ctx, &pulsar.ProducerMessage{
-						Payload: []byte(jsonstr2),
-					}); err != nil {
-						log.Printf("pulsar.send.base.fail: %s", err)
-					}
+					// jsonstr2, err2 := json.Marshal(&saveBaseDto)
+					// if err2 != nil {
+					// 	log.Println("parse.json.fail.worker:{}", err.Error())
+					// 	continue
+					// }
+					// //msgId
+					// if _, err := baseProducer.Send(ctx, &pulsar.ProducerMessage{
+					// 	Payload: []byte(jsonstr2),
+					// }); err != nil {
+					// 	log.Printf("pulsar.send.base.fail: %s", err)
+					// }
 				}
 
 				rsJsonstr, err := json.Marshal(&saveFollowDto)
@@ -537,37 +544,18 @@ func main() {
 					saveWorkerDto.FollowerEndCursor = "end"
 				}
 
-				jsonstr, err := json.Marshal(&saveWorkerDto)
-				if err != nil {
-					log.Println("parse.json.fail.worker:{}", err.Error())
-					continue
-				}
+				sendWork(saveWorkerDto, producer)
 
-				//msgId
-				if _, err := producer.Send(ctx, &pulsar.ProducerMessage{
-					Payload: []byte(jsonstr),
-				}); err != nil {
-					log.Printf("pulsar.send.fail: %s", err)
-				}
-
-				// var saveBaseDto SaveBaseDto
-				// saveBaseDto.Login = loadgithubMto.Login
-				// saveBaseDto.Name = following.Name
-				// saveBaseDto.Email = following.Email
-				// saveBaseDto.Company = following.Company
-				// saveBaseDto.UpdateAt = following.UpdatedAt
-
-				// jsonstr2, err2 := json.Marshal(&saveBaseDto)
-				// if err2 != nil {
+				// jsonstr, err := json.Marshal(&saveWorkerDto)
+				// if err != nil {
 				// 	log.Println("parse.json.fail.worker:{}", err.Error())
 				// 	continue
 				// }
-
 				// //msgId
-				// if _, err := baseProducer.Send(ctx, &pulsar.ProducerMessage{
-				// 	Payload: []byte(jsonstr2),
+				// if _, err := producer.Send(ctx, &pulsar.ProducerMessage{
+				// 	Payload: []byte(jsonstr),
 				// }); err != nil {
-				// 	log.Printf("pulsar.send.base.fail: %s", err)
+				// 	log.Printf("pulsar.send.fail: %s", err)
 				// }
 
 				//确认消费
