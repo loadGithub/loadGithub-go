@@ -404,10 +404,18 @@ func main() {
 				}
 
 				//TODO 需要考虑完善，目前只要有一个end就不再继续该worker
-				if loadgithubMto.FollowingEndCursor == "end" || loadgithubMto.FollowerEndCursor == "end" {
+				if loadgithubMto.FollowingEndCursor == "end" && loadgithubMto.FollowerEndCursor == "end" {
 					log.Println("endcursor.have end", loadgithubMto)
 					consumer.Ack(msg)
 					continue
+				}
+
+				if loadgithubMto.FollowingEndCursor == "end"  {
+					loadgithubMto.FollowingEndCursor=""
+				}
+
+				if loadgithubMto.FollowerEndCursor == "end" {
+					loadgithubMto.FollowerEndCursor=""
 				}
 
 				log.Println("begin grpc ==================", loadgithubMto.Login)
