@@ -52,12 +52,15 @@ type SaveFollowDto struct {
 	Followers  []string `json:"followers"`
 }
 
-var channs = make(chan int, 50)
+var baseChanns = make(chan int, 50)
+var workChanns = make(chan int, 50)
+var channs = make(chan int, 100)
 
-func sendBase(saveBaseDto SaveBaseDto, producer pulsar.Producer) {
+func sendBase(saveBaseDto SaveBaseDto, producer pulsar.Producer,channel chan int) {
 	jsonstr2, err2 := json.Marshal(&saveBaseDto)
 	if err2 != nil {
 		log.Println("parse.json.fail.worker:{}", err2.Error())
+		<- channel
 		return
 	}
 	// log.Println("==========================sendBase", jsonstr2)
@@ -66,13 +69,15 @@ func sendBase(saveBaseDto SaveBaseDto, producer pulsar.Producer) {
 	}); err != nil {
 		log.Printf("pulsar.send.base.fail: %s", err)
 	}
+	<- channel
 	
 }
 
-func sendWork(saveWorkerDto SaveWorkerDto, producer pulsar.Producer) {
+func sendWork(saveWorkerDto SaveWorkerDto, producer pulsar.Producer,channel chan int) {
 	jsonstr, err := json.Marshal(&saveWorkerDto)
 	if err != nil {
 		log.Println("parse.json.fail.worker:{}", err.Error())
+		<- channel
 		return
 	}
 	// log.Println("==========================sendWork", jsonstr)
@@ -83,6 +88,7 @@ func sendWork(saveWorkerDto SaveWorkerDto, producer pulsar.Producer) {
 	}); err != nil {
 		log.Printf("pulsar.send.fail: %s", err)
 	}
+	<- channel
 	
 }
 
@@ -448,7 +454,8 @@ func main() {
 					// }); err != nil {
 					// 	log.Printf("pulsar.send.fail: %s", err)
 					// }
-					sendWork(saveWorkerDto, producer)
+					channs <- 1
+					go sendWork(saveWorkerDto, producer,channs)
 
 					var saveBaseDto SaveBaseDto
 					saveBaseDto.Login = following.Login
@@ -457,7 +464,8 @@ func main() {
 					saveBaseDto.Company = following.Company
 					saveBaseDto.UpdateAt = following.UpdatedAt
 
-					sendBase(saveBaseDto, baseProducer)
+					channs <- 1
+					go sendBase(saveBaseDto, baseProducer,channs)
 
 					// jsonstr2, err2 := json.Marshal(&saveBaseDto)
 					// if err2 != nil {
@@ -494,7 +502,8 @@ func main() {
 					// 	log.Printf("pulsar.send.fail: %s", err)
 					// }
 
-					sendWork(saveWorkerDto, producer)
+					channs <- 1
+					go sendWork(saveWorkerDto, producer,channs)
 
 					var saveBaseDto SaveBaseDto
 					saveBaseDto.Login = following.Login
@@ -503,7 +512,8 @@ func main() {
 					saveBaseDto.Company = following.Company
 					saveBaseDto.UpdateAt = following.UpdatedAt
 
-					sendBase(saveBaseDto, baseProducer)
+					channs <- 1
+					go sendBase(saveBaseDto, baseProducer,channs)
 
 					// jsonstr2, err2 := json.Marshal(&saveBaseDto)
 					// if err2 != nil {
@@ -544,7 +554,8 @@ func main() {
 					saveWorkerDto.FollowerEndCursor = "end"
 				}
 
-				sendWork(saveWorkerDto, producer)
+				channs <- 1
+				sendWork(saveWorkerDto, producer,channs)
 
 				// jsonstr, err := json.Marshal(&saveWorkerDto)
 				// if err != nil {
